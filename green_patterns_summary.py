@@ -57,10 +57,11 @@ def extract_data(response_json):
             pattern, technology, occurrences, effort_pd, None, None
         ])
 
-        # Summary by pattern
+        # Summary by pattern with technology tracking
         if pattern not in summary_by_pattern:
-            summary_by_pattern[pattern] = 0
-        summary_by_pattern[pattern] += occurrences
+            summary_by_pattern[pattern] = {'count': 0, 'technos': set()}
+        summary_by_pattern[pattern]['count'] += occurrences
+        summary_by_pattern[pattern]['technos'].add(technology)
 
         # Unique apps per pattern
         app_names = {app['name'] for app in applications}
@@ -77,10 +78,11 @@ def extract_data(response_json):
         'Effort by Occurrence (Person-day)', 'Cost (FTE/Day)', 'Tech Debt ($) Effort x Cost'
     ]).sort_values(by='Number of Occurrences', ascending=False)
 
-    # Summary by Rule – pattern level only
+    # Summary by Rule – now includes Technologies column
     summary_df = pd.DataFrame([
-        [pattern, count] for pattern, count in summary_by_pattern.items()
-    ], columns=['Rule/Pattern', 'Number of Occurrences']).sort_values(by='Number of Occurrences', ascending=False)
+        [pattern, ', '.join(sorted(data['technos'])), data['count']]
+        for pattern, data in summary_by_pattern.items()
+    ], columns=['Rule/Pattern', 'Technologies', 'Number of Occurrences']).sort_values(by='Number of Occurrences', ascending=False)
 
     # Unique Apps per Pattern
     unique_apps_df = pd.DataFrame([
@@ -113,6 +115,7 @@ def save_to_excel(detailed_df, summary_df, unique_apps_df, domain_id):
 
     summary_total = {
         'Rule/Pattern': 'TOTAL',
+        'Technologies': '',
         'Number of Occurrences': summary_df['Number of Occurrences'].sum()
     }
     summary_df = pd.concat([summary_df, pd.DataFrame([summary_total])], ignore_index=True)
@@ -147,7 +150,7 @@ def save_to_excel(detailed_df, summary_df, unique_apps_df, domain_id):
     format_sheet(ws_detail, len(detailed_df), numeric_cols=['C', 'D', 'F'], bold_last=True)
 
     ws_summary = wb['Summary by Rule']
-    format_sheet(ws_summary, len(summary_df), numeric_cols=['B'], bold_last=True)
+    format_sheet(ws_summary, len(summary_df), numeric_cols=['C'], bold_last=True)
 
     ws_unique = wb['Pattern in Unique Apps']
     format_sheet(ws_unique, len(unique_apps_df), numeric_cols=['B'], bold_last=True)
