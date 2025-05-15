@@ -34,16 +34,16 @@ def get_api_data(hl_instance, domain_id, application_id, api_key):
 def extract_green_data(hl_instance, domain_id, application_id, api_key):
     data = get_api_data(hl_instance, domain_id, application_id, api_key)
     if not data:
-        return None
+        return None, None
 
     if 'metrics' not in data or not data['metrics']:
         print("No metrics data found in the response.")
-        return None
+        return None, None
 
     metric = data['metrics'][0]
     if 'greenDetail' not in metric or not metric['greenDetail']:
         print("No green details found in metrics.")
-        return None
+        return None, None
 
     rows = []
     for tech_data in metric['greenDetail']:
@@ -73,83 +73,142 @@ def extract_green_data(hl_instance, domain_id, application_id, api_key):
     
     if not rows:
         print("No rules with occurrences found.")
-        return None
+        return None, None
         
-    df = pd.DataFrame(rows, columns=[
+    # Create detailed DataFrame
+    detailed_df = pd.DataFrame(rows, columns=[
         'Rule/Pattern',
         'Technology',
         'Number of Occurrences',
         'Effort by Occurrence (Person-day)',
         'Cost (FTE/Day)',
         'Tech Debt ($) Effort x Cost'
-    ])
+    ]).sort_values('Number of Occurrences', ascending=False)
     
-    return df.sort_values('Number of Occurrences', ascending=False)
+    # Create summary DataFrame
+    summary_data = []
+    for rule, group in detailed_df.groupby('Rule/Pattern'):
+        technologies = ', '.join(group['Technology'].unique())
+        total_occurrences = group['Number of Occurrences'].sum()
+        summary_data.append([rule, technologies, total_occurrences])
+    
+    summary_df = pd.DataFrame(summary_data, columns=[
+        'Rule/Pattern',
+        'Technology',
+        'Number of Occurrences'
+    ]).sort_values('Number of Occurrences', ascending=False)
+    
+    return detailed_df, summary_df
 
-def save_to_excel(df, domain_id, application_id):
+def save_to_excel(detailed_df, summary_df, domain_id, application_id):
     os.makedirs('output', exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f'output/green_metrics_d{domain_id}_a{application_id}_{timestamp}.xlsx'
     
-    # Create a copy of the DataFrame for Excel export
-    excel_df = df.copy()
+    # Create a copy of the DataFrames for Excel export
+    excel_detailed_df = detailed_df.copy()
+    excel_summary_df = summary_df.copy()
     
-    # Add total row
+    # Add total row to detailed sheet
     total_row = {
         'Rule/Pattern': 'TOTAL',
         'Technology': '',
-        'Number of Occurrences': df['Number of Occurrences'].sum(),
-        'Effort by Occurrence (Person-day)': df['Effort by Occurrence (Person-day)'].sum(),
+        'Number of Occurrences': detailed_df['Number of Occurrences'].sum(),
+        'Effort by Occurrence (Person-day)': detailed_df['Effort by Occurrence (Person-day)'].sum(),
         'Cost (FTE/Day)': '',  # Leave empty as it requires user input
         'Tech Debt ($) Effort x Cost': ''  # Will be calculated by Excel formula
     }
-    excel_df = pd.concat([excel_df, pd.DataFrame([total_row])], ignore_index=True)
+    excel_detailed_df = pd.concat([excel_detailed_df, pd.DataFrame([total_row])], ignore_index=True)
     
-    # Save to Excel
-    excel_df.to_excel(output_file, index=False, sheet_name='Green Metrics')
+    # Add total row to summary sheet
+    summary_total_row = {
+        'Rule/Pattern': 'TOTAL',
+        'Technology': '',
+        'Number of Occurrences': summary_df['Number of Occurrences'].sum()
+    }
+    excel_summary_df = pd.concat([excel_summary_df, pd.DataFrame([summary_total_row])], ignore_index=True)
+    
+    # Save to Excel with two sheets
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        excel_detailed_df.to_excel(writer, index=False, sheet_name='Detailed Green Metrics')
+        excel_summary_df.to_excel(writer, index=False, sheet_name='Summary by Rule')
     
     # Format Excel file
     wb = load_workbook(output_file)
-    ws = wb.active
+    
+    # Format detailed sheet
+    ws_detail = wb['Detailed Green Metrics']
     
     # Add formulas for Tech Debt and Total
-    for row in range(2, len(df) + 2):
-        ws[f'F{row}'] = f'=ROUND(D{row}*E{row}, 2)'
+    for row in range(2, len(detailed_df) + 2):
+        ws_detail[f'F{row}'] = f'=ROUND(D{row}*E{row}, 2)'
     
     # Format headers
-    for cell in ws[1]:
+    for cell in ws_detail[1]:
         cell.font = Font(bold=True)
     
     # Format numbers (2 decimal places)
-    for row in ws.iter_rows(min_row=2, max_row=len(df)+2, min_col=3, max_col=7):
+    for row in ws_detail.iter_rows(min_row=2, max_row=len(detailed_df)+2, min_col=3, max_col=7):
         for cell in row:
             if cell.column_letter in ['C', 'D', 'F']:  # Numeric columns
                 cell.number_format = numbers.FORMAT_NUMBER_00
     
     # Format total row
-    total_row_num = len(df) + 2
-    for cell in ws[total_row_num]:
+    total_row_num = len(detailed_df) + 2
+    for cell in ws_detail[total_row_num]:
         if cell.column_letter in ['C', 'D']:
             cell.font = Font(bold=True)
     
     # Add formula for total Tech Debt
-    ws[f'F{total_row_num}'] = f'=SUM(F2:F{total_row_num-1})'
+    ws_detail[f'F{total_row_num}'] = f'=SUM(F2:F{total_row_num-1})'
+    
+    # Format summary sheet
+    ws_summary = wb['Summary by Rule']
+    
+    # Format headers
+    for cell in ws_summary[1]:
+        cell.font = Font(bold=True)
+    
+    # Format numbers
+    for row in ws_summary.iter_rows(min_row=2, max_row=len(summary_df)+2, min_col=3, max_col=3):
+        for cell in row:
+            cell.number_format = numbers.FORMAT_NUMBER_00
+    
+    # Format total row
+    summary_total_row_num = len(summary_df) + 2
+    for cell in ws_summary[summary_total_row_num]:
+        if cell.column_letter == 'C':
+            cell.font = Font(bold=True)
+    
+    # Auto-size columns for both sheets
+    for sheet in [ws_detail, ws_summary]:
+        for column in sheet.columns:
+            max_length = 0
+            column = [cell for cell in column]
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(cell.value)
+                except:
+                    pass
+            adjusted_width = (max_length + 2) * 1.2
+            sheet.column_dimensions[column[0].column_letter].width = adjusted_width
     
     wb.save(output_file)
-    print(f"✅ Successfully saved data to {output_file}")
-    print("💡 Remember to enter cost rates in Column E to calculate Tech Debt")
+    print(f"? Successfully saved data to {output_file}")
+    print("?? Remember to enter cost rates in Column E to calculate Tech Debt")
 
 def main():
     hl_instance, domain_id, application_id, api_key = load_config()
     if None in (hl_instance, domain_id, application_id, api_key):
-        print("❌ Failed to load configuration")
+        print("? Failed to load configuration")
         return
     
-    df = extract_green_data(hl_instance, domain_id, application_id, api_key)
-    if df is not None:
-        save_to_excel(df, domain_id, application_id)
+    detailed_df, summary_df = extract_green_data(hl_instance, domain_id, application_id, api_key)
+    if detailed_df is not None and summary_df is not None:
+        save_to_excel(detailed_df, summary_df, domain_id, application_id)
     else:
-        print("❌ No data was extracted. Check the input parameters and API access.")
+        print("? No data was extracted. Check the input parameters and API access.")
 
 if __name__ == '__main__':
     main()
